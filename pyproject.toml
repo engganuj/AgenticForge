@@ -1,0 +1,41 @@
+[project]
+name = "agenticforge"
+version = "0.1.0"
+description = "AgenticForge — open-source enterprise agentic AI orchestration platform"
+requires-python = ">=3.11"
+
+[tool.uv.workspace]
+members = [
+    "services/orchestrator-api",
+    "services/orchestrator-worker",
+    "services/mcp-server",
+    "ingestion",
+    "packages/shared",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "alembic>=1.13",
+    "psycopg2-binary>=2.9",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "testcontainers>=4.8",
+]

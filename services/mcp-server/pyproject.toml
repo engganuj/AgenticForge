@@ -1,0 +1,22 @@
+[project]
+name = "mcp-server"
+version = "0.1.0"
+description = "AgenticForge MCP server — exposes tools over MCP Streamable HTTP"
+requires-python = ">=3.11"
+dependencies = [
+    "agenticforge-shared",
+    "mcp>=1.2",
+    "httpx>=0.27",
+    "starlette>=0.38",
+    "uvicorn[standard]>=0.30",
+]
+
+[tool.uv.sources]
+agenticforge-shared = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_server"]

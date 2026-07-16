@@ -9,6 +9,10 @@ Redis, self-hosted Langfuse. Designed to run locally via Docker Compose first,
 with Helm/Terraform for AWS/Azure/OKE/GCP layered on in a later phase without
 architectural rework.
 
+See [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md) for the technical
+design document: architecture, design rationale, data model, and diagrams
+for each milestone.
+
 ## Prerequisites
 
 Native Linux (e.g. Ubuntu) or macOS — the stack is plain Docker Compose + Python:
@@ -51,6 +55,20 @@ DATABASE_URL=postgresql+psycopg2://agenticforge:agenticforge@localhost:5432/agen
   uv run --group dev alembic -c migrations/alembic.ini upgrade head
 ```
 
+## Native mode (no Docker)
+
+If you already have a Postgres instance running, you don't need Docker at
+all for M1/M2 — full walkthrough in [INSTALL.md, Path B](INSTALL.md#path-b-native-no-docker).
+
+```bash
+cp .env.example .env   # point DATABASE_URL at your existing Postgres
+make sync
+make migrate-native
+make run-native        # orchestrator-api :8000, mcp-server :8100
+make demo-m2           # weather tool: starts demo/mock_api, registers + calls get_weather, checks audit_log
+make demo-m2-devops    # code-review tools: starts demo/mock_devops_api, registers + calls 4 devops tools
+```
+
 ## Repository layout
 
 ```
@@ -68,7 +86,7 @@ demo/                          Per-milestone runnable demo scripts (double as sm
 ## Status
 
 - [x] M1 — Skeleton: Compose stack, Postgres+pgvector, Alembic initial schema, empty orchestrator-api + MCP server
-- [ ] M2 — MCP server with a manual tool + one real API
+- [x] M2 — MCP server with manual tools + real APIs (API-key auth, audit logging): weather (`make demo-m2`) and DevOps/code-review — PR review + create-branch/commit/open-PR (`make demo-m2-devops`)
 - [ ] M3 — OpenAPI-to-MCP adapter
 - [ ] M4 — LangGraph agent + MCP tools, Langfuse tracing
 - [ ] M5 — Model registry + multi-provider routing

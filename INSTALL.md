@@ -206,7 +206,7 @@ Postgres instance you already have. No Redis, no Langfuse — both are only
 needed starting at M4, so they're simply not part of this path yet.
 
 ### B1. Prerequisites
-
+0. Open WSL Ubuntu. Mount your project directory as cd /mnt/c/projects/AgenticForge
 1. **`uv`**:
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -290,12 +290,92 @@ uv run uvicorn orchestrator_api.main:app --host 0.0.0.0 --port 8000
 uv run python -m mcp_server.server
 ```
 
-### B7. Check the MCP server directly (optional)
+### B7. Test M2 — how to know it's working
+
+M2 adds: API-key auth on `mcp-server`, audit logging on every tool call, and
+8 manually-registered tools across two domains (`get_weather`, plus 7
+DevOps/code-review tools). This section is the definitive "did M2 install
+correctly" check.
+
+**Step 1 — run both automated demos:**
+
+```bash
+make demo-m2           # weather: demo/mock_api + get_weather
+make demo-m2-devops    # DevOps/code-review: demo/mock_devops_api + 7 tools
+```
+
+`demo-m2` runs `demo/scripts/m2_register_tool_and_call.py`: creates/reuses an
+API key for a `demo-caller` principal (stored at `.run/m2_demo_api_key.txt`
+so re-runs don't pile up new keys), registers `ToolSource`/`Tool` bookkeeping
+rows, calls `get_weather` as an authenticated MCP client, and asserts a
+matching `audit_log` row was written.
+
+`demo-m2-devops` runs `demo/scripts/m2_devops_tools_and_call.py` against the
+same key/principal: registers and calls all 7 DevOps tools
+(`list_open_pull_requests`, `get_pr_diff`, `post_review_comment`,
+`get_test_run_status`, `create_branch`, `commit_file_change`,
+`open_pull_request`), asserting an `audit_log` row for each. The three write
+tools (`post_review_comment`, `commit_file_change`, `open_pull_request`) are
+registered `requires_approval=True` — previewing the M8 HITL gate, not yet
+enforced.
+
+**✅ M2 is working if both commands exit cleanly (no Python traceback / no
+`AssertionError`) and end with output like this:**
+
+```
+# demo-m2
+tools/list -> ['get_weather', 'list_open_pull_requests', 'get_pr_diff', 'post_review_comment', 'get_test_run_status', 'create_branch', 'commit_file_change', 'open_pull_request']
+tools/call get_weather(london) -> [...]
+audit_log confirmed: actor='demo-caller' action='tool_call' after={...}
+
+# demo-m2-devops (7 lines, one per tool)
+audit_log confirmed for list_open_pull_requests: actor='demo-caller'
+audit_log confirmed for get_pr_diff: actor='demo-caller'
+audit_log confirmed for post_review_comment: actor='demo-caller'
+audit_log confirmed for get_test_run_status: actor='demo-caller'
+audit_log confirmed for create_branch: actor='demo-caller'
+audit_log confirmed for commit_file_change: actor='demo-caller'
+audit_log confirmed for open_pull_request: actor='demo-caller'
+```
+
+**❌ M2 is *not* working if you see:** an `AssertionError` on the audit_log
+check, a connection-refused error (services aren't running — go back to
+B6), or a 401/unauthorized error from the MCP client (see Troubleshooting).
+
+Note: the mock DevOps API keeps branches/commits/PRs in memory only (no
+persistence), so re-running `make demo-m2-devops` **without** restarting
+`demo/mock_devops_api` first will 409 on `create_branch` (the branch from
+the previous run still exists in that process's memory) — that's expected,
+not a failure; restart with `make stop-native && make demo-m2-devops`.
+
+**Step 2 (optional) — confirm auth is actually enforced, not just present:**
+
+```bash
+curl -i http://localhost:8100/mcp
+```
+Expect `HTTP/1.1 401 Unauthorized` with no `Authorization` header sent. If
+this instead connects/hangs waiting on the MCP protocol handshake, the
+`ApiKeyAuthMiddleware` isn't being applied.
+
+**Step 3 (optional) — confirm the registry and audit rows directly in Postgres:**
+
+```bash
+psql -h <host> -U <user> -d agenticforge -c \
+  "SELECT tool_key, requires_approval, pii_policy FROM tools ORDER BY tool_key;"
+psql -h <host> -U <user> -d agenticforge -c \
+  "SELECT actor, action, resource_id, created_at FROM audit_log ORDER BY created_at DESC LIMIT 10;"
+```
+Expect 8 rows in `tools` (matching the `tools/list` output above), and at
+least 8 rows in `audit_log` with `resource_id` matching each tool call made.
+
+**Step 4 (optional) — check the MCP server directly with the Inspector:**
 
 ```bash
 npx @modelcontextprotocol/inspector http://localhost:8100
 ```
-`tools/list` should return an empty list at this stage (M1 has no tools yet).
+Paste `cat .run/m2_demo_api_key.txt` into the Inspector's Authorization
+header field as `Bearer <key>` — without it, every call gets rejected per
+Step 2 above.
 
 ### B8. When you reach M4 (Langfuse tracing, queue-backed runs)
 
@@ -317,5 +397,7 @@ At that point you'll need Redis and Langfuse too. Cheapest options then:
 **Path B (Native):**
 - **`CREATE EXTENSION vector` fails with "could not open extension control file"**: the `postgresql-<version>-pgvector` package doesn't match your running server's major version, or didn't install. Re-check `SHOW server_version;` vs. the package you installed.
 - **`psql: error: connection refused`**: your existing Postgres isn't listening where you think — check `sudo ss -tulpn | grep 5432` and whether it's bound to `localhost` only vs. all interfaces, and check `pg_hba.conf` allows your user/host.
+- **`make demo-m2` fails with a 401/"unauthorized"**: the demo script and the running `mcp-server` must agree on the API key — if you previously deleted `.run/m2_demo_api_key.txt` but the DB row from an earlier run is still there (or vice versa), they'll disagree. Simplest fix: `rm -f .run/m2_demo_api_key.txt` and re-run `make demo-m2` — it'll mint a fresh key and row together.
+- **`make demo-m2` fails on `streamablehttp_client`/`ClientSession` import or connection errors**: the MCP Python SDK's client API path can differ between versions — check what's actually installed with `uv run python -c "import mcp.client.streamable_http as m; print(dir(m))"` and adjust the import in `demo/scripts/m2_register_tool_and_call.py` if the function name differs. Also confirm the URL: the script assumes the streamable-http app is mounted at `/mcp` (`MCP_SERVER_URL` in `.env`) — check `.run/mcp-server.log` for the actual mount path if it 404s.
 - **`make run-native` starts but `demo-native` fails**: check `.run/orchestrator-api.log` — most likely `DATABASE_URL` in `.env` is wrong, or `make migrate-native` wasn't run first.
 - **Port 8000 or 8100 already in use**: something else in your WSL environment (possibly the other datalake project) is already bound to it — change the port in the `make run-native` command / `MCP_SERVER_PORT` in `.env`.

@@ -1,21 +1,26 @@
 import os
 
+import uvicorn
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP(
-    "AgenticForge MCP Server",
-    host="0.0.0.0",
-    port=int(os.environ.get("MCP_SERVER_PORT", "8100")),
-)
+from mcp_server.governance.auth import ApiKeyAuthMiddleware
 
-# Tools are registered by importing modules under mcp_server.tools and
-# mcp_server.adapters (OpenAPI-generated tools) — none registered yet in M1.
-# `mcp.run(transport="streamable-http")` below serves an empty `tools/list`
-# until M2 adds the first manually-defined tool.
+mcp = FastMCP("AgenticForge MCP Server")
+
+# Tool modules register themselves against `mcp` via the @mcp.tool() decorator
+# as a side effect of being imported. Import must happen after `mcp` exists
+# above (each tool module does `from mcp_server.server import mcp`), and
+# before the app is served below.
+from mcp_server.tools import demo_weather, devops  # noqa: E402,F401
+
+
+def create_app():
+    return ApiKeyAuthMiddleware(mcp.streamable_http_app())
 
 
 def main() -> None:
-    mcp.run(transport="streamable-http")
+    port = int(os.environ.get("MCP_SERVER_PORT", "8100"))
+    uvicorn.run(create_app(), host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":

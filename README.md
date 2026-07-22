@@ -66,7 +66,8 @@ make sync
 make migrate-native
 make run-native        # orchestrator-api :8000, mcp-server :8100
 make demo-m2           # weather tool: starts demo/mock_api, registers + calls get_weather, checks audit_log
-make demo-m2-devops    # code-review tools: starts demo/mock_devops_api, registers + calls 4 devops tools
+make demo-m2-devops    # code-review tools: starts demo/mock_devops_api, registers + calls 7 devops tools
+make demo-m3           # OpenAPI adapter: registers ToolSources, restarts mcp-server, verifies auto-generated tools
 ```
 
 ## Repository layout
@@ -87,7 +88,7 @@ demo/                          Per-milestone runnable demo scripts (double as sm
 
 - [x] M1 — Skeleton: Compose stack, Postgres+pgvector, Alembic initial schema, empty orchestrator-api + MCP server
 - [x] M2 — MCP server with manual tools + real APIs (API-key auth, audit logging): weather (`make demo-m2`) and DevOps/code-review — PR review + create-branch/commit/open-PR (`make demo-m2-devops`)
-- [ ] M3 — OpenAPI-to-MCP adapter
+- [x] M3 — OpenAPI-to-MCP adapter: auto-generates a tool per operation from any OpenAPI spec, no hand-written code (`make demo-m3`)
 - [ ] M4 — LangGraph agent + MCP tools, Langfuse tracing
 - [ ] M5 — Model registry + multi-provider routing
 - [ ] M6 — File ingestion + pgvector RAG

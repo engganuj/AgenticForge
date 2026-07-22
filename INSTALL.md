@@ -388,7 +388,71 @@ Paste `cat .run/m2_demo_api_key.txt` into the Inspector's Authorization
 header field as `Bearer <key>` — without it, every call gets rejected per
 Step 2 above.
 
-### C2. Local (non-container) Python dev loop
+### C2. Test M3 — OpenAPI-to-MCP adapter
+
+M3 adds a second way to get tools into `mcp-server`: point a `ToolSource` at
+an API's OpenAPI spec (`/openapi.json`) and get one MCP tool per operation
+auto-generated, no hand-written wrapper needed. It runs alongside M2's manual
+tools, not instead of them.
+
+```bash
+make demo-m3
+```
+
+This one command does three things in sequence (matching the fact that
+registration is boot-time, not hot-reload — see
+`mcp_server/adapters/openapi_adapter.py` for why):
+1. Runs `demo/scripts/m3_register_openapi_sources.py` — inserts two
+   `ToolSource(kind="openapi")` rows pointing at the demo weather and DevOps
+   APIs' `/openapi.json`.
+2. Restarts `mcp-server` (`make restart-mcp-native`) so it picks the new
+   `ToolSource` rows up at boot and auto-generates a tool per operation.
+3. Runs `demo/scripts/m3_openapi_adapter_demo.py`, which verifies the
+   generated tools work.
+
+**✅ M3 is working if `demo-m3` exits cleanly and ends with output like:**
+
+```
+tools/list -> ['commitFileChange', 'commit_file_change', 'createBranch', 'create_branch', 'getPullRequestDiff', 'getTestRunStatus', 'getWeatherByCity', 'get_pr_diff', 'get_test_run_status', 'get_weather', 'listOpenPullRequests', 'list_open_pull_requests', 'openPullRequest', 'open_pull_request', 'postReviewComment', 'post_review_comment']
+confirmed all 8 auto-generated tools are registered
+get_weather(london) [manual]      -> [...]
+getWeatherByCity(london) [auto]    -> [...]
+confirmed manual and auto-generated tools agree for the same operation
+listOpenPullRequests() [auto] -> [...]
+getPullRequestDiff(101) [auto] -> [...]
+audit_log confirmed for getWeatherByCity: actor='demo-caller'
+audit_log confirmed for listOpenPullRequests: actor='demo-caller'
+audit_log confirmed for getPullRequestDiff: actor='demo-caller'
+```
+
+Note `tools/list` now has 16 entries: the 8 M2 manual tools (snake_case)
+plus all 8 M3 auto-generated ones (camelCase operationIds). Only
+`get_weather`/`getWeatherByCity` are actually compared for equivalence
+above; the manual and generated names never collide because M2 used
+snake_case tool keys throughout, and OpenAPI operationIds here are
+camelCase.
+
+**❌ Not working if:** `demo-m3` errors with `expected auto-generated tools
+missing from tools/list` (mcp-server didn't restart, or didn't pick up the
+`ToolSource` rows — check `.run/mcp-server.log` for an
+`[openapi-adapter] ...` line confirming it registered them at boot), or an
+`AssertionError` on the manual-vs-generated comparison (would mean the
+adapter built a tool that doesn't actually behave like the real operation —
+a real bug, not a config issue).
+
+**Optional — confirm registration happened at the Postgres level:**
+
+```bash
+psql -h <host> -U <user> -d agenticforge -c \
+  "SELECT name, kind, openapi_url FROM tool_sources WHERE kind = 'openapi';"
+```
+Expect two rows: `weather-openapi` and `devops-openapi`.
+
+**Re-running `make demo-m3` later:** safe — `m3_register_openapi_sources.py`
+is idempotent (skips ToolSource rows that already exist), and mcp-server
+regenerates all tools fresh from the specs on every restart.
+
+### C3. Local (non-container) Python dev loop
 
 Only needed if you're editing service code and want fast iteration without
 rebuilding images each time:
@@ -407,7 +471,7 @@ DATABASE_URL=postgresql+psycopg2://agenticforge:agenticforge@localhost:5432/agen
   uv run --group dev alembic -c migrations/alembic.ini upgrade head
 ```
 
-### C3. When you reach M4 (Langfuse tracing, queue-backed runs)
+### C4. When you reach M4 (Langfuse tracing, queue-backed runs)
 
 At that point you'll need Redis and Langfuse too. Cheapest options then:
 - Redis: `sudo apt-get install -y redis-server` (native, no Docker needed for this one either)

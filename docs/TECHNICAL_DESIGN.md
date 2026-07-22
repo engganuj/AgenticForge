@@ -349,7 +349,7 @@ flowchart LR
 |---|---|---|
 | **M1 — Skeleton** | Docker Compose stack; Postgres + `pgvector`; Alembic initial schema (all tables, even future-milestone ones); empty `orchestrator-api` (`/healthz`) and `mcp-server` (no tools registered yet) | ✅ Done |
 | **M2 — First real tools** | Manually-defined MCP tools across two domains — `get_weather` (`demo/mock_api`) and seven DevOps/code-review tools wrapping `demo/mock_devops_api` (`list_open_pull_requests`, `get_pr_diff`, `post_review_comment`, `get_test_run_status`, `create_branch`, `commit_file_change`, `open_pull_request`) — + `ToolSource`/`Tool` registration rows; API-key auth middleware in front of `mcp-server`; `audit_log` write on every tool call | ✅ Done |
-| **M3 — OpenAPI-to-MCP adapter** | Given an OpenAPI spec URL, auto-generates MCP tool definitions — scales tool coverage without hand-writing wrappers per endpoint | ⬜ Planned |
+| **M3 — OpenAPI-to-MCP adapter** | `mcp_server/adapters/openapi_adapter.py`: given any OpenAPI spec, auto-generates one MCP tool per operation (dynamically-synthesized function per operation, so FastMCP's normal schema introspection applies unchanged) — scales tool coverage without hand-writing wrappers per endpoint. Registered via `ToolSource(kind="openapi")` rows, read at `mcp-server` boot | ✅ Done |
 | **M4 — Agent runtime** | `orchestrator-worker` comes online: LangGraph executes agents, calling MCP tools, off the Redis/`arq` queue; Postgres checkpointing for resumable state; Langfuse wired in for tracing | ⬜ Planned |
 | **M5 — Model registry** | `model_providers`/`model_registry`/`model_routing_rules` populated and enforced; multi-provider routing goes live (OpenAI, Anthropic, Azure OpenAI, Ollama, vLLM) | ⬜ Planned |
 | **M6 — RAG ingestion** | `ingestion` service: file/SQL/datalake sources parsed, chunked, embedded into `pgvector`; a retrieval MCP tool for agents to query it | ⬜ Planned |
@@ -427,6 +427,57 @@ surface. It also deliberately does **not** shortcut the reasoning half — no
 LLM call is hidden inside these tools — because that would bypass Langfuse
 tracing, the model registry, and the M8 HITL gate that `commit_file_change`/
 `open_pull_request` are already flagged for.
+
+### M3 today (what's actually running)
+
+```mermaid
+sequenceDiagram
+    actor Reg as m3_register_openapi_sources.py
+    actor MCPProc as mcp-server (boot)
+    participant PG as Postgres
+    actor Demo as m3_openapi_adapter_demo.py
+    participant MockAPI as demo/mock_api or mock_devops_api
+
+    Reg->>PG: insert ToolSource(kind=openapi, openapi_url, base_url_override)
+    Note over MCPProc: process (re)start required — boot-time, not hot-reload
+    MCPProc->>PG: SELECT ToolSource WHERE kind='openapi' AND enabled
+    loop each ToolSource
+        MCPProc->>MockAPI: GET {openapi_url} (fetch spec)
+        MockAPI-->>MCPProc: OpenAPI 3.x JSON
+        loop each operation in spec.paths
+            MCPProc->>MCPProc: synthesize a real function (exec) matching\nthe operation's path/query/body params
+            MCPProc->>MCPProc: mcp.add_tool(fn, name=operationId)
+        end
+    end
+    Demo->>MCPProc: tools/list
+    MCPProc-->>Demo: manual (snake_case) + auto-generated (camelCase) tools
+    Demo->>MCPProc: tools/call get_weather {city} / getWeatherByCity {city}
+    MCPProc->>MockAPI: (both resolve to the same underlying REST call)
+    MockAPI-->>MCPProc: identical response
+    MCPProc-->>Demo: identical tool results — adapter output verified against
+    Demo->>PG: assert audit_log rows exist for generated-tool calls too
+```
+
+**Why registration is boot-time instead of live/hot-reload:** a hot-reload
+admin endpoint (`POST /tool-sources` triggering immediate registration
+without a restart — see [§7.2](#72-turning-an-openapi-spec-into-mcp-tools-m3))
+belongs with `orchestrator-api`'s admin surface, which doesn't exist yet
+(M1's `orchestrator-api` is still just `/healthz`). Building that now would
+mean M3 also builds a chunk of unrelated admin-API scope. Reading
+`ToolSource` rows once at `mcp-server` startup gets the actual adapter
+mechanism — spec-to-tool codegen — fully working and testable today; the
+"apply without a restart" ergonomics layer on top is a clean, independent
+addition for whenever the admin API exists.
+
+**Why generated functions are synthesized with `exec` rather than passed a
+raw JSON schema:** the alternative — finding and using whatever
+lower-level/undocumented API FastMCP might expose for registering a tool
+with an explicit schema — is a guess at SDK internals that could silently
+break across `mcp` package versions. Building a *real* Python function with
+a *real* parameter signature per operation means FastMCP's completely normal,
+documented, type-hint-based introspection (the same path `@mcp.tool()` uses
+for hand-written tools) does the schema derivation — no reliance on
+internals specific to this adapter.
 
 ---
 
@@ -633,6 +684,18 @@ sequenceDiagram
 ```
 
 ### 7.2 Turning an OpenAPI spec into MCP tools (M3)
+
+This is the **target flow**, once `orchestrator-api` has an admin surface
+(not yet built — M1's `orchestrator-api` is still just `/healthz`) and M4's
+LangGraph agent exists as the caller. What's actually running today —
+demo scripts insert the `ToolSource` row directly, `mcp-server` reads it at
+boot rather than being triggered by an API call, and no per-operation `Tool`
+row is inserted (the running tool registry inside `mcp-server` is the source
+of truth for generated tools; only `ToolSource` is persisted) — is
+diagrammed in [§5, "M3 today"](#m3-today-whats-actually-running). The
+underlying adapter mechanism (spec → generated tool functions) is identical
+in both; what differs is only *what triggers* registration and *whether* a
+`Tool` row is written per generated operation.
 
 ```mermaid
 sequenceDiagram

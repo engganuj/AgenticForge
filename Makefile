@@ -1,6 +1,7 @@
 .PHONY: up down logs ps migrate sync lint test demo-m1 \
 	migrate-native run-native stop-native logs-native demo-native \
-	run-mock-api-native run-devops-api-native demo-m2 demo-m2-devops
+	run-mock-api-native run-devops-api-native demo-m2 demo-m2-devops \
+	stop-mcp-native restart-mcp-native demo-m3
 
 COMPOSE = docker compose -f infra/docker-compose/docker-compose.yml
 COMPOSE_ALL = $(COMPOSE) -f infra/docker-compose/docker-compose.langfuse.yml
@@ -84,3 +85,21 @@ demo-m2: run-mock-api-native
 demo-m2-devops: run-devops-api-native
 	set -a; [ -f .env ] && . ./.env; set +a; \
 	uv run python demo/scripts/m2_devops_tools_and_call.py
+
+stop-mcp-native:
+	-kill $$(cat .run/mcp-server.pid) 2>/dev/null
+	rm -f .run/mcp-server.pid
+
+restart-mcp-native: stop-mcp-native
+	mkdir -p .run
+	set -a; [ -f .env ] && . ./.env; set +a; \
+	nohup uv run python -m mcp_server.server \
+		> .run/mcp-server.log 2>&1 & echo $$! > .run/mcp-server.pid
+	@echo "mcp-server restarted, pid $$(cat .run/mcp-server.pid)"
+
+demo-m3: run-mock-api-native run-devops-api-native
+	set -a; [ -f .env ] && . ./.env; set +a; \
+	uv run python demo/scripts/m3_register_openapi_sources.py
+	$(MAKE) restart-mcp-native
+	set -a; [ -f .env ] && . ./.env; set +a; \
+	uv run python demo/scripts/m3_openapi_adapter_demo.py

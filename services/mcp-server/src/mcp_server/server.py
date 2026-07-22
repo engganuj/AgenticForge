@@ -18,9 +18,13 @@ def create_app():
     return ApiKeyAuthMiddleware(mcp.streamable_http_app())
 
 
+# Create the app at module level so it's available when uvicorn imports
+app = create_app()
+
+
 def main() -> None:
     port = int(os.environ.get("MCP_SERVER_PORT", "8100"))
-    uvicorn.run(create_app(), host="0.0.0.0", port=port)
+    uvicorn.run("mcp_server.server:app", host="0.0.0.0", port=port, reload=False)
 
 
 if __name__ == "__main__":

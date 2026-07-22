@@ -1,0 +1,17 @@
+# This repo targets Linux/WSL (Docker, Make, Python, shell). Force LF on
+# checkout regardless of the checking-out machine's core.autocrlf setting,
+# so Makefile recipes and shell scripts never silently pick up CRLF from a
+# Windows checkout — GNU Make in particular breaks on trailing \r in a
+# recipe line.
+* text=auto eol=lf
+
+Makefile text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Binary — never touch line endings.
+*.docx binary
+*.png binary
+*.jpg binary

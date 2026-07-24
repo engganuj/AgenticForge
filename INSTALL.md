@@ -100,6 +100,8 @@ blank until the milestone that needs it:
 
 ## 4. Bring up the stack
 
+Run these commands from the repository root. If Docker Desktop is managing Docker on your machine, make sure the engine is running before you start.
+
 ```bash
 make up
 ```
@@ -168,28 +170,18 @@ npx @modelcontextprotocol/inspector http://localhost:8100
 ```
 
 This opens a browser-based inspector; `tools/list` should return an empty
-list at this stage.
+list at this stage. If `npx` is not available, install Node.js/npm first (for
+example, `sudo apt-get install -y nodejs npm`) and retry.
 
-## 8. Local (non-container) Python dev loop
+Notes:
+- In **M1**, `tools/list` being empty is expected.
+- In **M2**, `tools/list` should show **8 tools** (weather + DevOps).
+- If you're running the mock APIs from **WSL** but running `mcp-server` inside
+  **Docker**, Docker networking can prevent the MCP server from reaching the
+  mock APIs. The simplest working setup for M2 demos is: keep Docker up for
+  Postgres/Langfuse, but run `mcp-server` natively in WSL (see C1 below).
 
-Only needed if you're editing service code and want fast iteration without
-rebuilding images each time:
-
-```bash
-make sync      # uv sync --all-packages --group dev
-make lint      # ruff check .
-make test      # pytest
-```
-
-To run Alembic directly against the Compose Postgres from your host shell
-(bypassing the `migrate` container):
-
-```bash
-DATABASE_URL=postgresql+psycopg2://agenticforge:agenticforge@localhost:5432/agenticforge \
-  uv run --group dev alembic -c migrations/alembic.ini upgrade head
-```
-
-## 9. Tear down / reset
+## 8. Tear down / reset
 
 ```bash
 make down                     # stop and remove containers
@@ -206,7 +198,7 @@ Postgres instance you already have. No Redis, no Langfuse — both are only
 needed starting at M4, so they're simply not part of this path yet.
 
 ### B1. Prerequisites
-0. Open WSL Ubuntu. Mount your project directory as cd /mnt/c/projects/AgenticForge
+0. Open WSL Ubuntu and change into your repository directory. If you cloned the repo into a Windows path, the equivalent command is typically `cd /mnt/c/projects/AgenticForge`.
 1. **`uv`**:
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -290,7 +282,16 @@ uv run uvicorn orchestrator_api.main:app --host 0.0.0.0 --port 8000
 uv run python -m mcp_server.server
 ```
 
-### B7. Test M2 — how to know it's working
+### B7. Continue with the common steps
+
+Once the service stack is up through either Path A or Path B, continue with the
+common steps below for M2 verification, local dev workflow, and later milestones.
+
+## Common steps
+
+These steps are useful whether you followed Path A or Path B.
+
+### C1. Test M2 — how to know it's working
 
 M2 adds: API-key auth on `mcp-server`, audit logging on every tool call, and
 8 manually-registered tools across two domains (`get_weather`, plus 7
@@ -302,6 +303,15 @@ correctly" check.
 ```bash
 make demo-m2           # weather: demo/mock_api + get_weather
 make demo-m2-devops    # DevOps/code-review: demo/mock_devops_api + 7 tools
+```
+
+If you're using **Docker Compose for Postgres/Langfuse** but running the demos
+from **WSL**, stop the Docker MCP server and run it natively so it can reach
+the mock APIs:
+
+```bash
+docker compose -f infra/docker-compose/docker-compose.yml stop mcp-server
+uv run python -m mcp_server.server
 ```
 
 `demo-m2` runs `demo/scripts/m2_register_tool_and_call.py`: creates/reuses an
@@ -340,7 +350,8 @@ audit_log confirmed for open_pull_request: actor='demo-caller'
 
 **❌ M2 is *not* working if you see:** an `AssertionError` on the audit_log
 check, a connection-refused error (services aren't running — go back to
-B6), or a 401/unauthorized error from the MCP client (see Troubleshooting).
+Path A/B setup), or a 401/unauthorized error from the MCP client (see
+Troubleshooting).
 
 Note: the mock DevOps API keeps branches/commits/PRs in memory only (no
 persistence), so re-running `make demo-m2-devops` **without** restarting
@@ -377,7 +388,26 @@ Paste `cat .run/m2_demo_api_key.txt` into the Inspector's Authorization
 header field as `Bearer <key>` — without it, every call gets rejected per
 Step 2 above.
 
-### B8. When you reach M4 (Langfuse tracing, queue-backed runs)
+### C2. Local (non-container) Python dev loop
+
+Only needed if you're editing service code and want fast iteration without
+rebuilding images each time:
+
+```bash
+make sync      # uv sync --all-packages --group dev
+make lint      # ruff check .
+make test      # pytest
+```
+
+To run Alembic directly against the Compose Postgres from your host shell
+(bypassing the `migrate` container):
+
+```bash
+DATABASE_URL=postgresql+psycopg2://agenticforge:agenticforge@localhost:5432/agenticforge \
+  uv run --group dev alembic -c migrations/alembic.ini upgrade head
+```
+
+### C3. When you reach M4 (Langfuse tracing, queue-backed runs)
 
 At that point you'll need Redis and Langfuse too. Cheapest options then:
 - Redis: `sudo apt-get install -y redis-server` (native, no Docker needed for this one either)

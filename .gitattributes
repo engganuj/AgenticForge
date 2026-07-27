@@ -13,5 +13,6 @@ Makefile text eol=lf
 
 # Binary — never touch line endings.
 *.docx binary
+*.xlsx binary
 *.png binary
 *.jpg binary

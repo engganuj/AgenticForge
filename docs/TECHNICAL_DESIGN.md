@@ -350,7 +350,7 @@ flowchart LR
 | **M1 — Skeleton** | Docker Compose stack; Postgres + `pgvector`; Alembic initial schema (all tables, even future-milestone ones); empty `orchestrator-api` (`/healthz`) and `mcp-server` (no tools registered yet) | ✅ Done |
 | **M2 — First real tools** | Manually-defined MCP tools across two domains — `get_weather` (`demo/mock_api`) and seven DevOps/code-review tools wrapping `demo/mock_devops_api` (`list_open_pull_requests`, `get_pr_diff`, `post_review_comment`, `get_test_run_status`, `create_branch`, `commit_file_change`, `open_pull_request`) — + `ToolSource`/`Tool` registration rows; API-key auth middleware in front of `mcp-server`; `audit_log` write on every tool call | ✅ Done |
 | **M3 — OpenAPI-to-MCP adapter** | `mcp_server/adapters/openapi_adapter.py`: given any OpenAPI spec, auto-generates one MCP tool per operation (dynamically-synthesized function per operation, so FastMCP's normal schema introspection applies unchanged) — scales tool coverage without hand-writing wrappers per endpoint. Registered via `ToolSource(kind="openapi")` rows, read at `mcp-server` boot | ✅ Done |
-| **M4 — Agent runtime** | `orchestrator-worker` comes online: LangGraph executes agents, calling MCP tools, off the Redis/`arq` queue; Postgres checkpointing for resumable state; Langfuse wired in for tracing | ⬜ Planned |
+| **M4 — Agent runtime** | `orchestrator-worker` comes online: a supervisor/tools LangGraph (`graphs/supervisor_graph.py`) executes agents, calling MCP tools over the same M2/M3 path, queued via arq/Redis (`POST /api/v1/runs`, `GET /api/v1/runs/{id}`), `AsyncPostgresSaver` checkpointing, Langfuse `CallbackHandler` tracing. Model provider hardcoded via `M4_MODEL_PROVIDER` (registry/routing is M5) | ✅ Done |
 | **M5 — Model registry** | `model_providers`/`model_registry`/`model_routing_rules` populated and enforced; multi-provider routing goes live (OpenAI, Anthropic, Azure OpenAI, Ollama, vLLM) | ⬜ Planned |
 | **M6 — RAG ingestion** | `ingestion` service: file/SQL/datalake sources parsed, chunked, embedded into `pgvector`; a retrieval MCP tool for agents to query it | ⬜ Planned |
 | **M7 — Semantic layer** | Cube.dev definitions in `semantic-layer/cube`, exposed as a queryable metrics layer — including as an agent tool, so agents query defined metrics instead of writing raw SQL | ⬜ Planned |
@@ -478,6 +478,69 @@ a *real* parameter signature per operation means FastMCP's completely normal,
 documented, type-hint-based introspection (the same path `@mcp.tool()` uses
 for hand-written tools) does the schema derivation — no reliance on
 internals specific to this adapter.
+
+### M4 today (what's actually running)
+
+```mermaid
+sequenceDiagram
+    actor Demo as m4_langgraph_agent_demo.py
+    participant API as orchestrator-api
+    participant PG as Postgres
+    participant Q as Redis (arq)
+    participant W as orchestrator-worker
+    participant MCP as mcp-server
+    participant LLM as Model provider (M4_MODEL_PROVIDER)
+    participant LF as Langfuse
+
+    Demo->>PG: ensure Agent(name=weather-devops-agent, graph_key=supervisor_graph)
+    Demo->>API: POST /api/v1/runs {agent_name, input: {message}}
+    API->>PG: insert Run(status=queued)
+    API->>Q: enqueue_job("run_graph", run_id)
+    API-->>Demo: {run_id}
+
+    Q->>W: dequeue run_graph(run_id)
+    W->>PG: Run.status = running
+    W->>W: mint/reuse orchestrator-worker API key (rbac.bootstrap)
+    W->>MCP: fetch tools (langchain-mcp-adapters, Bearer auth)
+    W->>W: build supervisor_graph, AsyncPostgresSaver(thread_id=run_id)
+    W->>LLM: agent node: chat completion
+    LLM-->>W: tool call requested (e.g. get_weather)
+    W->>MCP: tools/call get_weather
+    MCP-->>W: tool result
+    W->>LF: trace spans (LLM generation + tool call), trace_id=run_id
+    W->>LLM: agent node: continue with tool result
+    LLM-->>W: final answer
+    W->>PG: Run.status=completed, output, langfuse_trace_id=run_id
+
+    loop poll
+        Demo->>API: GET /api/v1/runs/{run_id}
+        API->>PG: select Run
+        API-->>Demo: status/output
+    end
+    Demo->>Demo: print Langfuse trace link (host/trace/run_id)
+```
+
+**Why `Run.langfuse_trace_id` is just set to `run_id` rather than a
+separately-generated Langfuse ID:** `get_langfuse_callback_handler(trace_id=run_id)`
+forces Langfuse to use our own ID for the trace, so the two systems'
+identifiers for "this run" are the same string — no join table, no
+round-trip to Langfuse to discover its generated ID before storing it.
+
+**Why the worker mints its own API key via the same `rbac.bootstrap` helper
+the demo scripts use, rather than a hardcoded/shared secret:** the worker is
+just another MCP client from `mcp-server`'s point of view — reusing the
+exact same principal/role/audit path means a tool call made by an agent
+shows up in `audit_log` with `actor='orchestrator-worker'`, distinguishable
+from a human-triggered demo-script call, for free. Real secret provisioning
+(rotation, a proper secrets manager instead of a `.run/*.txt` file) is M8
+scope; this is the pragmatic bootstrap until then.
+
+**Why the graph is looked up via a small `_GRAPH_BUILDERS` dict keyed by
+`Agent.graph_key`, instead of just always calling `build_graph()`:** M4 only
+has one graph, so this looks like unnecessary indirection today — but
+`graph_key` already exists on `Agent` (from the M1 schema-first design, see
+§2.8), and routing through it now means adding a second graph type later is
+a dict entry, not a change to `tasks.py`'s control flow.
 
 ---
 
@@ -641,6 +704,13 @@ erDiagram
 ## 7. Key Runtime Flows
 
 ### 7.1 Agent run lifecycle (with HITL pause), from M4 onward
+
+This is the **target flow including the HITL pause/resume branch**, which is
+M8 scope (`RunApproval`, `interrupt()`) — not implemented yet. What's
+actually running today (M4: the non-HITL path only, real endpoint is
+`POST /api/v1/runs` not `POST /runs`) is diagrammed in
+[§5, "M4 today"](#m4-today-whats-actually-running). Everything above the
+`alt tool requires_approval` branch below matches reality already.
 
 ```mermaid
 sequenceDiagram

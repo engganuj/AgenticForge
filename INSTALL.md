@@ -94,9 +94,10 @@ blank until the milestone that needs it:
 |---|---|---|
 | `DATABASE_URL` | Everything | Default value already matches the Compose Postgres — leave as-is for local dev |
 | `MCP_SERVER_PORT` | M1+ | Default `8100`, only change if that port is taken |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `AZURE_OPENAI_*` | M5 (model registry) | Leave blank if you're not using that provider yet |
-| `OLLAMA_BASE_URL` / `VLLM_BASE_URL` | M5, local/open models | Only if you're running Ollama/vLLM locally |
-| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | M4+ (tracing) | You generate these in step 6 below, *after* Langfuse is up — leave blank for now |
+| `M4_MODEL_PROVIDER` | M4 (agent runtime) | `openai` \| `azure_openai` \| `anthropic` \| `ollama` — which provider the M4 agent hardcodes; full multi-provider routing is M5 |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `AZURE_OPENAI_*` | M4 (whichever you picked above), generalized at M5 | Fill in credentials for your chosen `M4_MODEL_PROVIDER`; leave the rest blank |
+| `OLLAMA_BASE_URL` / `VLLM_BASE_URL` | M4/M5, local/open models | Only if you're running Ollama/vLLM locally |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | M4 (tracing) | You generate these in step 6 below, *after* Langfuse is up — leave blank for now |
 
 ## 4. Bring up the stack
 
@@ -471,11 +472,86 @@ DATABASE_URL=postgresql+psycopg2://agenticforge:agenticforge@localhost:5432/agen
   uv run --group dev alembic -c migrations/alembic.ini upgrade head
 ```
 
-### C4. When you reach M4 (Langfuse tracing, queue-backed runs)
+### C4. Test M4 — LangGraph agent runtime
 
-At that point you'll need Redis and Langfuse too. Cheapest options then:
-- Redis: `sudo apt-get install -y redis-server` (native, no Docker needed for this one either)
-- Langfuse: either self-host at that point (its stack — ClickHouse, MinIO, Postgres, Redis — is genuinely easier via `docker-compose.langfuse.yml` than natively, even if you're avoiding Docker for the app services), or sign up for the Langfuse Cloud free tier and point `LANGFUSE_HOST`/keys at that instead of self-hosting.
+M4 brings `orchestrator-worker` online: a real LangGraph agent that calls
+your configured LLM, decides whether to invoke an MCP tool, calls it via
+`mcp-server` (the exact same M2/M3 tools), loops until done, and traces the
+whole thing in Langfuse. Two new pieces of infra are needed beyond M1-M3,
+neither containerized for the app services themselves:
+
+1. **Redis** (queue between `orchestrator-api` and `orchestrator-worker`):
+   ```bash
+   sudo apt-get install -y redis-server
+   sudo systemctl start redis-server
+   redis-cli ping   # expect: PONG
+   ```
+2. **Langfuse** — self-hosted via Docker is genuinely easier than natively
+   even though the app services stay native (its stack is Postgres +
+   ClickHouse + MinIO + Redis):
+   ```bash
+   make up-langfuse
+   ```
+   Then open http://localhost:3000, create your first user/org/project, generate
+   an API key pair, and set `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` in `.env`
+   (see step 6 of Path A above for the same one-time setup). Alternative: skip
+   Docker entirely and use the Langfuse Cloud free tier, pointing `LANGFUSE_HOST`
+   at `https://cloud.langfuse.com` instead.
+
+3. **A model provider configured in `.env`** — M4 hardcodes one provider via
+   `M4_MODEL_PROVIDER` (`openai` | `azure_openai` | `anthropic` | `ollama`); the
+   full multi-provider model registry is M5. Fill in the matching credentials
+   (e.g. `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_ENDPOINT`/`AZURE_OPENAI_DEPLOYMENT`
+   for `azure_openai`) — see `.env.example` for the full set per provider.
+
+Then, with `orchestrator-api` and `mcp-server` already running (B6) and the
+M2/M3 `ToolSource`/`Tool` rows already registered:
+
+```bash
+make demo-m4
+```
+
+This starts the mock APIs and `orchestrator-worker` (arq), then runs
+`demo/scripts/m4_langgraph_agent_demo.py`, which: registers a reference
+`Agent` row (`weather-devops-agent`, `graph_key=supervisor_graph`), submits a
+run via `POST /api/v1/runs` asking "What's the weather in London right
+now?", polls `GET /api/v1/runs/{id}` until it completes, and prints a
+Langfuse trace link.
+
+**✅ M4 is working if `demo-m4` ends with something like:**
+```
+submitted run <uuid>
+final run status: completed
+output: {'response': "It's 14°C and cloudy in London right now."}
+View the trace at: http://localhost:3000/trace/<uuid>
+```
+Open that link — you should see a trace with a nested LLM generation
+(the model deciding to call `get_weather`) and a tool-call span
+underneath it, with token usage/cost populated on the generation.
+
+**❌ Not working if:**
+- `demo-m4` hangs until it times out (30 polls × 2s) with `status: queued` or
+  `running` forever → the worker likely isn't picking up jobs. Check
+  `.run/orchestrator-worker.log` — common causes: Redis isn't running
+  (`redis-cli ping`), or the worker crashed on startup (missing model
+  provider credentials, MCP server unreachable).
+- `status: failed` with an `output.error` → check
+  `.run/orchestrator-worker.log` for the actual exception. Frequent culprits:
+  wrong/missing API key for the configured `M4_MODEL_PROVIDER`, or
+  `mcp-server` not running / API key mismatch (the worker mints its own
+  `orchestrator-worker` principal key the same way the demo scripts do —
+  see `.run/orchestrator_worker_api_key.txt`).
+- The trace link 404s in Langfuse → `LANGFUSE_PUBLIC_KEY`/`SECRET_KEY` in
+  `.env` don't match the project you created in the UI, or Langfuse itself
+  isn't up (`make up-langfuse`, then check `docker compose -f
+  infra/docker-compose/docker-compose.langfuse.yml ps`).
+
+**Restarting individual pieces while iterating:**
+```bash
+make stop-native && make run-native   # orchestrator-api + mcp-server
+# orchestrator-worker only:
+kill $(cat .run/orchestrator-worker.pid); make run-worker-native
+```
 
 ---
 

@@ -68,13 +68,18 @@ make run-native        # orchestrator-api :8000, mcp-server :8100
 make demo-m2           # weather tool: starts demo/mock_api, registers + calls get_weather, checks audit_log
 make demo-m2-devops    # code-review tools: starts demo/mock_devops_api, registers + calls 7 devops tools
 make demo-m3           # OpenAPI adapter: registers ToolSources, restarts mcp-server, verifies auto-generated tools
+
+# M4 also needs Redis (native) and Langfuse (self-hosted via Docker, or Langfuse Cloud):
+sudo systemctl start redis-server   # or: redis-server --daemonize yes
+make up-langfuse                    # self-hosted Langfuse (Docker), even though app services stay native
+make demo-m4                        # submits a run, polls to completion, prints the Langfuse trace link
 ```
 
 ## Repository layout
 
 ```
 services/orchestrator-api/     FastAPI HTTP surface (runs, agents, tools, models, admin)
-services/orchestrator-worker/  LangGraph execution off a queue (built out from M4)
+services/orchestrator-worker/  LangGraph agent runtime, executed off an arq/Redis queue
 services/mcp-server/           MCP Streamable HTTP server + OpenAPI-to-MCP adapter
 ingestion/                     File/SQL/datalake ingestion pipelines (built out from M6)
 semantic-layer/cube/           Cube.dev metrics-layer definitions (built out from M7)
@@ -89,7 +94,7 @@ demo/                          Per-milestone runnable demo scripts (double as sm
 - [x] M1 — Skeleton: Compose stack, Postgres+pgvector, Alembic initial schema, empty orchestrator-api + MCP server
 - [x] M2 — MCP server with manual tools + real APIs (API-key auth, audit logging): weather (`make demo-m2`) and DevOps/code-review — PR review + create-branch/commit/open-PR (`make demo-m2-devops`)
 - [x] M3 — OpenAPI-to-MCP adapter: auto-generates a tool per operation from any OpenAPI spec, no hand-written code (`make demo-m3`)
-- [ ] M4 — LangGraph agent + MCP tools, Langfuse tracing
+- [x] M4 — LangGraph agent runtime: `orchestrator-worker` executes a supervisor/tools loop over MCP, queued via arq/Redis, checkpointed in Postgres, traced in Langfuse (`make demo-m4`)
 - [ ] M5 — Model registry + multi-provider routing
 - [ ] M6 — File ingestion + pgvector RAG
 - [ ] M7 — Semantic layer (Cube.dev)

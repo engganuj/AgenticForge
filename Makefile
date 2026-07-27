@@ -1,7 +1,8 @@
 .PHONY: up down logs ps migrate sync lint test demo-m1 \
 	migrate-native run-native stop-native logs-native demo-native \
 	run-mock-api-native run-devops-api-native demo-m2 demo-m2-devops \
-	stop-mcp-native restart-mcp-native demo-m3
+	stop-mcp-native restart-mcp-native demo-m3 \
+	run-worker-native up-langfuse down-langfuse demo-m4
 
 COMPOSE = docker compose -f infra/docker-compose/docker-compose.yml
 COMPOSE_ALL = $(COMPOSE) -f infra/docker-compose/docker-compose.langfuse.yml
@@ -70,10 +71,11 @@ stop-native:
 	-kill $$(cat .run/mcp-server.pid) 2>/dev/null
 	-kill $$(cat .run/mock-api.pid) 2>/dev/null
 	-kill $$(cat .run/devops-api.pid) 2>/dev/null
-	rm -f .run/orchestrator-api.pid .run/mcp-server.pid .run/mock-api.pid .run/devops-api.pid
+	-kill $$(cat .run/orchestrator-worker.pid) 2>/dev/null
+	rm -f .run/orchestrator-api.pid .run/mcp-server.pid .run/mock-api.pid .run/devops-api.pid .run/orchestrator-worker.pid
 
 logs-native:
-	tail -f .run/orchestrator-api.log .run/mcp-server.log .run/mock-api.log .run/devops-api.log
+	tail -f .run/orchestrator-api.log .run/mcp-server.log .run/mock-api.log .run/devops-api.log .run/orchestrator-worker.log
 
 demo-native:
 	curl -sf http://localhost:8000/healthz && echo "\norchestrator-api OK"
@@ -103,3 +105,24 @@ demo-m3: run-mock-api-native run-devops-api-native
 	$(MAKE) restart-mcp-native
 	set -a; [ -f .env ] && . ./.env; set +a; \
 	uv run python demo/scripts/m3_openapi_adapter_demo.py
+
+# --- M4: LangGraph agent runtime. Needs Redis (native, e.g. `sudo systemctl
+# start redis-server`) and Langfuse (self-hosted via Docker below, or
+# Langfuse Cloud) in addition to everything M1-M3 already needs. ---
+
+up-langfuse:
+	docker compose -f infra/docker-compose/docker-compose.langfuse.yml up -d
+
+down-langfuse:
+	docker compose -f infra/docker-compose/docker-compose.langfuse.yml down
+
+run-worker-native:
+	mkdir -p .run
+	set -a; [ -f .env ] && . ./.env; set +a; \
+	nohup uv run arq orchestrator_worker.worker.WorkerSettings \
+		> .run/orchestrator-worker.log 2>&1 & echo $$! > .run/orchestrator-worker.pid
+	@echo "orchestrator-worker pid $$(cat .run/orchestrator-worker.pid), log: .run/orchestrator-worker.log"
+
+demo-m4: run-mock-api-native run-devops-api-native run-worker-native
+	set -a; [ -f .env ] && . ./.env; set +a; \
+	uv run python demo/scripts/m4_langgraph_agent_demo.py

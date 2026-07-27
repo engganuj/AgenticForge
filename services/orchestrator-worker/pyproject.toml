@@ -1,13 +1,15 @@
 [project]
 name = "orchestrator-worker"
 version = "0.1.0"
-description = "AgenticForge orchestrator worker — executes LangGraph runs off a queue (built out from M4)"
+description = "AgenticForge orchestrator worker — executes LangGraph runs off a queue"
 requires-python = ">=3.11"
 dependencies = [
     "agenticforge-shared",
     "langgraph>=0.2",
     "langgraph-checkpoint-postgres>=2.0",
     "langchain-mcp-adapters>=0.1",
+    "langchain-openai>=0.2",
+    "psycopg[binary,pool]>=3.1",
     "arq>=0.26",
 ]
 

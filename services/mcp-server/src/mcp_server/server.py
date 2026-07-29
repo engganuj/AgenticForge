@@ -1,5 +1,5 @@
-import asyncio
 import os
+from contextlib import asynccontextmanager
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
@@ -16,7 +16,21 @@ from mcp_server.tools import demo_weather, devops  # noqa: E402,F401
 
 
 def create_app():
-    return ApiKeyAuthMiddleware(mcp.streamable_http_app())
+    app = mcp.streamable_http_app()
+
+    # FastMCP's Streamable HTTP app wires its own Starlette lifespan to
+    # initialize the internal session manager task group. We must not override
+    # it, or the first /mcp request will 500.
+    original_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        async with original_lifespan(_app):
+            await _register_openapi_tool_sources()
+            yield
+
+    app.router.lifespan_context = lifespan
+    return ApiKeyAuthMiddleware(app)
 
 
 async def _register_openapi_tool_sources() -> None:
@@ -43,14 +57,6 @@ async def _register_openapi_tool_sources() -> None:
         )
         print(f"[openapi-adapter] {tool_source.name}: registered {len(registered)} tools -> {registered}")
 
-
-# Registration must happen before `app` is built below, and at module level
-# (not inside main()) so it still runs if uvicorn re-imports this module by
-# string reference in a reload/multi-worker context, where main() itself
-# wouldn't be re-invoked. Single-process/no-reload today (see main()), so in
-# practice this only ever runs once — but this ordering keeps it correct if
-# that changes later.
-asyncio.run(_register_openapi_tool_sources())
 
 # Create the app at module level so it's available when uvicorn imports by
 # string reference (required for future --reload/multi-worker support).

@@ -27,7 +27,12 @@ async def run_graph(ctx, run_id: str) -> None:
         user_input = run.input.get("message", "")
         graph_key = agent.graph_key
 
+    # get_langfuse_callback_handler() returns None if no compatible langfuse
+    # SDK import was found (see langfuse_setup.py) — callbacks must stay an
+    # empty list in that case, not [None], which LangChain's callback
+    # manager rejects.
     langfuse_handler = get_langfuse_callback_handler(trace_id=run_id)
+    callbacks = [langfuse_handler] if langfuse_handler is not None else []
 
     try:
         graph_builder = _GRAPH_BUILDERS.get(graph_key)
@@ -40,7 +45,7 @@ async def run_graph(ctx, run_id: str) -> None:
                 {"messages": [HumanMessage(content=user_input)]},
                 config={
                     "configurable": {"thread_id": run_id},
-                    "callbacks": [langfuse_handler],
+                    "callbacks": callbacks,
                 },
             )
         final_message = result_state["messages"][-1]
@@ -55,6 +60,6 @@ async def run_graph(ctx, run_id: str) -> None:
         run = result.scalar_one()
         run.status = status
         run.output = output
-        run.langfuse_trace_id = run_id
+        run.langfuse_trace_id = run_id if langfuse_handler is not None else None
         run.completed_at = datetime.now(timezone.utc)
         await session.commit()

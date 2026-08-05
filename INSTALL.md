@@ -518,6 +518,16 @@ run via `POST /api/v1/runs` asking "What's the weather in London right
 now?", polls `GET /api/v1/runs/{id}` until it completes, and prints a
 Langfuse trace link.
 
+If you're calling `POST /api/v1/runs` by hand (curl/Postman) rather than via
+the demo script, `input` must contain a `message` or `prompt` key — anything
+else is rejected with `422` at submission time rather than silently running
+the agent on an empty message:
+```bash
+curl -X POST http://localhost:8000/api/v1/runs \
+  -H "Content-Type: application/json" \
+  -d '{"agent_name": "weather-devops-agent", "input": {"message": "What is the weather in Mumbai?"}}'
+```
+
 **✅ M4 is working if `demo-m4` ends with something like:**
 ```
 submitted run <uuid>

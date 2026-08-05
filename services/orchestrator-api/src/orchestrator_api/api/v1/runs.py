@@ -3,7 +3,13 @@ import uuid
 
 from agenticforge_shared.db.models import Agent, Run
 from agenticforge_shared.db.session import get_session
-from agenticforge_shared.schemas.runs import RunCreateRequest, RunCreateResponse, RunResponse
+from agenticforge_shared.schemas.runs import (
+    MESSAGE_INPUT_KEYS,
+    RunCreateRequest,
+    RunCreateResponse,
+    RunResponse,
+    extract_message,
+)
 from arq import create_pool
 from arq.connections import RedisSettings
 from fastapi import APIRouter, HTTPException
@@ -24,6 +30,12 @@ async def _get_redis_pool():
 
 @router.post("", response_model=RunCreateResponse)
 async def create_run(body: RunCreateRequest) -> RunCreateResponse:
+    if extract_message(body.input) is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"input must contain one of {MESSAGE_INPUT_KEYS!r}",
+        )
+
     async with get_session() as session:
         result = await session.execute(select(Agent).where(Agent.name == body.agent_name))
         agent = result.scalar_one_or_none()

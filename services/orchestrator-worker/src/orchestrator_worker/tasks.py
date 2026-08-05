@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from agenticforge_shared.db.models import Agent, Run
 from agenticforge_shared.db.session import get_session
 from agenticforge_shared.observability.langfuse_setup import get_langfuse_callback_handler
+from agenticforge_shared.schemas.runs import extract_message
 from langchain_core.messages import HumanMessage
 from sqlalchemy import select
 
@@ -24,7 +25,7 @@ async def run_graph(ctx, run_id: str) -> None:
         run.status = "running"
         run.started_at = datetime.now(timezone.utc)
         await session.commit()
-        user_input = run.input.get("message", "")
+        user_input = extract_message(run.input) or ""
         graph_key = agent.graph_key
 
     # get_langfuse_callback_handler() returns None if no compatible langfuse

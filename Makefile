@@ -2,7 +2,7 @@
 	migrate-native run-native stop-native logs-native demo-native \
 	run-mock-api-native run-devops-api-native demo-m2 demo-m2-devops \
 	stop-mcp-native restart-mcp-native demo-m3 \
-	run-worker-native up-langfuse down-langfuse demo-m4
+	run-worker-native up-langfuse down-langfuse demo-m4 demo-m5
 
 COMPOSE = docker compose -f infra/docker-compose/docker-compose.yml
 COMPOSE_ALL = $(COMPOSE) -f infra/docker-compose/docker-compose.langfuse.yml
@@ -126,3 +126,13 @@ run-worker-native:
 demo-m4: run-mock-api-native run-devops-api-native run-worker-native
 	set -a; [ -f .env ] && . ./.env; set +a; \
 	uv run python demo/scripts/m4_langgraph_agent_demo.py
+
+# --- M5: model registry + multi-provider routing. No new infra vs M4 — the
+# registry is read fresh from Postgres on every run, so no service restart
+# is needed after (re-)registering providers/models/routing rules. ---
+
+demo-m5: run-mock-api-native run-devops-api-native run-worker-native
+	set -a; [ -f .env ] && . ./.env; set +a; \
+	uv run python demo/scripts/m5_register_model_providers.py
+	set -a; [ -f .env ] && . ./.env; set +a; \
+	uv run python demo/scripts/m5_multi_model_routing_demo.py

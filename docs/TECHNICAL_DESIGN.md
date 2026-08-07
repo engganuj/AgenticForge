@@ -350,8 +350,8 @@ flowchart LR
 | **M1 — Skeleton** | Docker Compose stack; Postgres + `pgvector`; Alembic initial schema (all tables, even future-milestone ones); empty `orchestrator-api` (`/healthz`) and `mcp-server` (no tools registered yet) | ✅ Done |
 | **M2 — First real tools** | Manually-defined MCP tools across two domains — `get_weather` (`demo/mock_api`) and seven DevOps/code-review tools wrapping `demo/mock_devops_api` (`list_open_pull_requests`, `get_pr_diff`, `post_review_comment`, `get_test_run_status`, `create_branch`, `commit_file_change`, `open_pull_request`) — + `ToolSource`/`Tool` registration rows; API-key auth middleware in front of `mcp-server`; `audit_log` write on every tool call | ✅ Done |
 | **M3 — OpenAPI-to-MCP adapter** | `mcp_server/adapters/openapi_adapter.py`: given any OpenAPI spec, auto-generates one MCP tool per operation (dynamically-synthesized function per operation, so FastMCP's normal schema introspection applies unchanged) — scales tool coverage without hand-writing wrappers per endpoint. Registered via `ToolSource(kind="openapi")` rows, read at `mcp-server` boot | ✅ Done |
-| **M4 — Agent runtime** | `orchestrator-worker` comes online: a supervisor/tools LangGraph (`graphs/supervisor_graph.py`) executes agents, calling MCP tools over the same M2/M3 path, queued via arq/Redis (`POST /api/v1/runs`, `GET /api/v1/runs/{id}`), `AsyncPostgresSaver` checkpointing, Langfuse `CallbackHandler` tracing. Model provider hardcoded via `M4_MODEL_PROVIDER` (registry/routing is M5) | ✅ Done |
-| **M5 — Model registry** | `model_providers`/`model_registry`/`model_routing_rules` populated and enforced; multi-provider routing goes live (OpenAI, Anthropic, Azure OpenAI, Ollama, vLLM) | ⬜ Planned |
+| **M4 — Agent runtime** | `orchestrator-worker` comes online: a supervisor/tools LangGraph (`graphs/supervisor_graph.py`) executes agents, calling MCP tools over the same M2/M3 path, queued via arq/Redis (`POST /api/v1/runs`, `GET /api/v1/runs/{id}`), `AsyncPostgresSaver` checkpointing, Langfuse `CallbackHandler` tracing. Model provider hardcoded via `M4_MODEL_PROVIDER` at launch — superseded by M5 | ✅ Done |
+| **M5 — Model registry** | `model_registry/registry.py`: `model_providers`/`model_registry`/`model_routing_rules` resolved live on every run (no restart, unlike M3's boot-time tools); resolution order is explicit `Run.model_override` > matching `ModelRoutingRule` (by `agent_tag`) > `Agent.default_model_key`. Providers wired for real: Azure OpenAI, and Claude via Azure AI Foundry's Anthropic-compatible endpoint (same `anthropic` provider_type as native Anthropic, just a different `base_url`) | ✅ Done |
 | **M6 — RAG ingestion** | `ingestion` service: file/SQL/datalake sources parsed, chunked, embedded into `pgvector`; a retrieval MCP tool for agents to query it | ⬜ Planned |
 | **M7 — Semantic layer** | Cube.dev definitions in `semantic-layer/cube`, exposed as a queryable metrics layer — including as an agent tool, so agents query defined metrics instead of writing raw SQL | ⬜ Planned |
 | **M8 — Governance hardening** | RBAC enforcement (roles/permissions/API keys), `audit_log` writes on mutating actions, PII detection/masking (`pii_findings`, `Tool.pii_policy`) enforced at runtime | ⬜ Planned |
@@ -542,6 +542,72 @@ has one graph, so this looks like unnecessary indirection today — but
 §2.8), and routing through it now means adding a second graph type later is
 a dict entry, not a change to `tasks.py`'s control flow.
 
+### M5 today (what's actually running)
+
+```mermaid
+sequenceDiagram
+    actor Demo as m5_multi_model_routing_demo.py
+    participant API as orchestrator-api
+    participant PG as Postgres
+    participant W as orchestrator-worker
+    participant Registry as model_registry/registry.py
+    participant Azure as Azure OpenAI
+    participant Claude as Claude (Azure AI Foundry)
+
+    Note over PG: m5_register_model_providers.py already ran:<br/>2 ModelProviders, 2 ModelRegistryEntrys,<br/>1 ModelRoutingRule(agent_tag=cost_sensitive),<br/>Agent retagged cost_sensitive
+
+    Demo->>API: POST /api/v1/runs {agent_name, input} (no override)
+    API->>PG: insert Run(model_override=NULL)
+    Note over W: dequeued via arq, same path as M4
+    W->>Registry: resolve_model_key(agent, model_override=None)
+    Registry->>PG: select ModelRoutingRule order by priority desc
+    Registry->>Registry: agent.config.tags has "cost_sensitive" -> rule matches
+    Registry-->>W: "claude-haiku-4-5"
+    W->>Registry: get_chat_model("claude-haiku-4-5")
+    Registry->>PG: join model_registry + model_providers
+    Registry-->>W: ChatAnthropic(base_url=Foundry endpoint, ...)
+    W->>Claude: chat completion
+    Claude-->>W: response
+    W->>PG: Run.output.model_key = "claude-haiku-4-5"
+
+    Demo->>API: POST /api/v1/runs {agent_name, input, model_override: "azure-gpt-5.2-chat"}
+    API->>PG: insert Run(model_override="azure-gpt-5.2-chat")
+    W->>Registry: resolve_model_key(agent, model_override="azure-gpt-5.2-chat")
+    Registry-->>W: "azure-gpt-5.2-chat" (override short-circuits, rule never checked)
+    W->>Registry: get_chat_model("azure-gpt-5.2-chat")
+    Registry-->>W: AzureChatOpenAI(azure_endpoint=..., azure_deployment=...)
+    W->>Azure: chat completion
+    Azure-->>W: response
+    W->>PG: Run.output.model_key = "azure-gpt-5.2-chat"
+
+    Demo->>Demo: assert the two runs used different, expected model_keys
+```
+
+**Why resolution queries Postgres fresh on every call instead of caching
+the registry in-process:** unlike M3's OpenAPI tools (which must be
+compiled into real Python functions with real signatures — inherently a
+one-time, boot-time cost), a model/provider/rule lookup is just a row
+lookup with no code generation involved. Caching would save a query but
+introduce a staleness window where a newly-registered provider doesn't take
+effect until a restart — exactly the ergonomics problem M3 accepted as a
+tradeoff and explicitly flagged as a future improvement. M5 has no reason to
+accept that same tradeoff when the lookup itself is cheap.
+
+**Why Claude-via-Azure-AI-Foundry doesn't get its own `provider_type`:**
+Azure AI Foundry's Anthropic-compatible endpoint speaks the same protocol
+`langchain-anthropic`'s `ChatAnthropic` already targets — the only
+difference from native Anthropic is passing a custom `base_url`. Treating
+it as a separate `provider_type` (e.g. `"azure_foundry_anthropic"`) would
+duplicate the `"anthropic"` branch in `build_chat_model()` for zero
+behavioral difference. Any Anthropic-protocol-compatible endpoint is just
+`provider_type="anthropic"` with `base_url` set or unset.
+
+**Why `auth_secret_ref` stores an env var *name*, not the secret:** matches
+the schema's original intent ("secret refs, never raw secrets") without
+needing a real secrets manager yet — that's explicitly deferred to M8. The
+registry does `os.environ[provider.auth_secret_ref]`, so the DB never holds
+a credential, only a pointer to where one lives.
+
 ---
 
 ## 6. Data Model
@@ -597,6 +663,8 @@ erDiagram
         uuid id
         string provider_type "openai | anthropic | azure_openai | ollama | vllm"
         string base_url
+        string auth_secret_ref "env var name, not the secret itself"
+        jsonb config "provider-specific extras, e.g. api_version"
     }
     MODEL_REGISTRY_ENTRY {
         uuid id
@@ -626,6 +694,7 @@ erDiagram
         string status "queued | running | paused_hitl | completed | failed"
         jsonb input
         jsonb output
+        string model_override "caller-supplied model_key, M5; null = registry-resolved"
         string langfuse_trace_id
     }
     RUN_APPROVAL {

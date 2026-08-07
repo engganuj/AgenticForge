@@ -140,6 +140,7 @@ class ModelProvider(Base):
     provider_type: Mapped[str] = mapped_column(String(50))  # openai | anthropic | azure_openai | ollama | vllm
     base_url: Mapped[str | None] = mapped_column(Text)
     auth_secret_ref: Mapped[str | None] = mapped_column(Text)
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)  # provider-specific extras, e.g. {"api_version": "..."}
     created_at: Mapped[datetime] = _created_at()
 
     models: Mapped[list["ModelRegistryEntry"]] = relationship(back_populates="provider")
@@ -188,6 +189,7 @@ class Run(Base):
     )  # queued | running | paused_hitl | completed | failed
     input: Mapped[dict] = mapped_column(JSONB, default=dict)
     output: Mapped[dict | None] = mapped_column(JSONB)
+    model_override: Mapped[str | None] = mapped_column(String(255))  # caller-supplied model_key; None = registry-resolved
     langfuse_trace_id: Mapped[str | None] = mapped_column(String(255))
     requested_by: Mapped[str | None] = mapped_column(String(255))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

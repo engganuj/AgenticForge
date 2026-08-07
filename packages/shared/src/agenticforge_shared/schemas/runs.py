@@ -19,6 +19,12 @@ def extract_message(input_: dict) -> str | None:
 class RunCreateRequest(BaseModel):
     agent_name: str
     input: dict
+    # M5: explicit model_key to use instead of the agent's registry-resolved
+    # default (routing rules still apply if this is omitted). Must match an
+    # existing model_registry.model_key — checked at resolution time in the
+    # worker, not validated here (that would need a DB round-trip in the
+    # request path for a check that already happens where it matters).
+    model_override: str | None = None
 
 
 class RunCreateResponse(BaseModel):
@@ -31,6 +37,7 @@ class RunResponse(BaseModel):
     status: str
     input: dict
     output: dict | None = None
+    model_override: str | None = None
     langfuse_trace_id: str | None = None
 
     model_config = {"from_attributes": True}

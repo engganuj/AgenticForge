@@ -1,12 +1,14 @@
-"""M4 reference LangGraph implementation: a minimal agent-node + tools-node
+"""Reference LangGraph implementation: a minimal agent-node + tools-node
 loop (single agent, not yet a multi-agent supervisor/handoff mesh — that
 shape is a StateGraph extension, not a rewrite, whenever it's needed). Tools
 come from mcp-server (M2/M3's tools) via langchain-mcp-adapters, over the
 same Streamable HTTP + API-key auth path any other MCP client uses.
 
-Model provider is hardcoded per M4_MODEL_PROVIDER for now — the full
-model_registry/routing-rules indirection is M5. Swapping providers later is
-a change inside _get_chat_model(), not a graph rewrite.
+Model resolution goes through the model registry (M5,
+agenticforge_shared.model_registry.registry) — build_graph() takes an
+already-resolved `model_key`, not a provider name. Which model_key to use
+(override / routing rule / agent default) is decided by the caller
+(orchestrator_worker.tasks) before build_graph() is invoked.
 """
 
 import os
@@ -14,6 +16,7 @@ from pathlib import Path
 from typing import Annotated, TypedDict
 
 from agenticforge_shared.db.session import get_session
+from agenticforge_shared.model_registry.registry import get_chat_model
 from agenticforge_shared.rbac.bootstrap import ensure_api_key
 from langchain_core.messages import AnyMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -26,35 +29,6 @@ WORKER_KEY_FILE = Path(".run/orchestrator_worker_api_key.txt")
 
 class AgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
-
-
-def _get_chat_model():
-    provider = os.environ.get("M4_MODEL_PROVIDER", "openai")
-
-    if provider == "azure_openai":
-        from langchain_openai import AzureChatOpenAI
-
-        return AzureChatOpenAI(
-            azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
-            azure_deployment=os.environ["AZURE_OPENAI_DEPLOYMENT"],
-            api_key=os.environ["AZURE_OPENAI_API_KEY"],
-            api_version=os.environ.get("OPENAI_API_VERSION", "2024-12-01-preview"),
-        )
-    if provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
-
-        return ChatAnthropic(model=os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest"))
-    if provider == "ollama":
-        from langchain_ollama import ChatOllama
-
-        return ChatOllama(
-            model=os.environ.get("OLLAMA_MODEL", "llama3"),
-            base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
-        )
-
-    from langchain_openai import ChatOpenAI
-
-    return ChatOpenAI(model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"), api_key=os.environ["OPENAI_API_KEY"])
 
 
 async def _get_worker_api_key() -> str:
@@ -82,8 +56,8 @@ async def _get_mcp_tools() -> list:
     return await client.get_tools()
 
 
-async def build_graph(checkpointer):
-    model = _get_chat_model()
+async def build_graph(checkpointer, model_key: str):
+    model = await get_chat_model(model_key)
     tools = await _get_mcp_tools()
     model_with_tools = model.bind_tools(tools)
 

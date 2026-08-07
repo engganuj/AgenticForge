@@ -498,11 +498,17 @@ neither containerized for the app services themselves:
    Docker entirely and use the Langfuse Cloud free tier, pointing `LANGFUSE_HOST`
    at `https://cloud.langfuse.com` instead.
 
-3. **A model provider configured in `.env`** — M4 hardcodes one provider via
-   `M4_MODEL_PROVIDER` (`openai` | `azure_openai` | `anthropic` | `ollama`); the
-   full multi-provider model registry is M5. Fill in the matching credentials
-   (e.g. `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_ENDPOINT`/`AZURE_OPENAI_DEPLOYMENT`
-   for `azure_openai`) — see `.env.example` for the full set per provider.
+3. **A model provider configured in `.env`** — as originally built, M4
+   hardcoded one provider via `M4_MODEL_PROVIDER` (`openai` | `azure_openai` |
+   `anthropic` | `ollama`). **As of M5, the model registry resolves the real
+   model_key instead** (see C5 below) — `M4_MODEL_PROVIDER` only matters now
+   if you skip M5's seed script entirely, since an agent's
+   `default_model_key` has to actually exist in `model_registry` or a run
+   fails with a clear "no model_registry entry" error rather than silently
+   falling back to it. Fill in credentials for whichever provider(s) you're
+   using (e.g. `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_ENDPOINT`/
+   `AZURE_OPENAI_DEPLOYMENT` for `azure_openai`) — see `.env.example` for the
+   full set per provider.
 
 Then, with `orchestrator-api` and `mcp-server` already running (B6) and the
 M2/M3 `ToolSource`/`Tool` rows already registered:
@@ -562,6 +568,77 @@ make stop-native && make run-native   # orchestrator-api + mcp-server
 # orchestrator-worker only:
 kill $(cat .run/orchestrator-worker.pid); make run-worker-native
 ```
+
+### C5. Test M5 — model registry + multi-provider routing
+
+M5 replaces M4's hardcoded `M4_MODEL_PROVIDER` with real
+`model_providers`/`model_registry`/`model_routing_rules` rows, resolved
+fresh from Postgres on every run — no service restart needed after
+registering a new provider or model, unlike M3's OpenAPI tools. No new
+infra beyond M4; just needs at least one more real model provider
+configured in `.env` alongside the one M4 already used, so there's
+something to actually route *between*.
+
+```bash
+make demo-m5
+```
+
+This runs two scripts in sequence:
+1. `demo/scripts/m5_register_model_providers.py` — registers two
+   `ModelProvider`/`ModelRegistryEntry` pairs (reading connection info from
+   `.env`, never hardcoding secrets into the script), one `ModelRoutingRule`
+   (`agent_tag: cost_sensitive` → the second provider's model_key), and
+   retags the M4 reference agent (`weather-devops-agent`) with
+   `config.tags = ["cost_sensitive"]` and `default_model_key` set to the
+   first provider's model_key.
+2. `demo/scripts/m5_multi_model_routing_demo.py` — submits the same agent
+   twice: once with no override (should resolve via the routing rule to the
+   *second* provider, not the agent's own default), once with an explicit
+   `model_override` naming the *first* provider's model_key (should win
+   over the routing rule). Asserts both runs actually used the expected,
+   different `model_key` — proving the full resolution order (override >
+   routing rule > agent default), not just "a second provider also works."
+
+**✅ M5 is working if `demo-m5` ends with something like:**
+```
+run 1 (routing rule) used model_key='claude-haiku-4-5'
+run 2 (explicit override) used model_key='azure-gpt-5.2-chat'
+confirmed: routing rule and explicit override both resolved to the correct, different model_keys
+trace 1 (via routing rule):    http://localhost:3000/trace/<uuid>
+trace 2 (via explicit override): http://localhost:3000/trace/<uuid>
+```
+Open both trace links — same agent, visibly different model/provider on the
+generation span between the two.
+
+**❌ Not working if:**
+- `AssertionError` on either model_key check → re-run
+  `m5_register_model_providers.py` alone and check its printed output
+  matches what you expect; if the agent didn't exist yet when it ran (M4
+  demo never run), it prints a note instead of updating anything — run
+  `make demo-m4` once first, then `make demo-m5` again.
+- A run lands in `status: failed` with `output.error` containing "no
+  model_registry entry for model_key" → the referenced model_key doesn't
+  exist in `model_registry` yet — check
+  `psql ... -c "SELECT model_key FROM model_registry;"`.
+- A run fails with an actual provider API error (401/404/etc.) → check
+  `.run/orchestrator-worker.log`; likely a wrong API key, endpoint, or
+  deployment name in `.env` for whichever provider that model_key maps to.
+
+**Optional — inspect the registry directly:**
+```bash
+psql -h <host> -U <user> -d agenticforge -c \
+  "SELECT p.name, p.provider_type, m.model_key, m.model_name FROM model_registry m JOIN model_providers p ON p.id = m.provider_id;"
+psql -h <host> -U <user> -d agenticforge -c \
+  "SELECT match_condition, target_model_key, priority FROM model_routing_rules;"
+```
+
+**Using this with your own agent/models:** add a `ModelProvider` +
+`ModelRegistryEntry` row for any provider `packages/shared/.../model_registry/registry.py`
+supports (`openai`, `azure_openai`, `anthropic` — including Claude via Azure
+AI Foundry's Anthropic-compatible endpoint, just set `base_url` — `ollama`,
+`vllm`), then either set an `Agent.default_model_key` to that `model_key`,
+add a `ModelRoutingRule`, or pass `model_override` on the request. No code
+change needed for a new model on an already-supported provider type.
 
 ---
 

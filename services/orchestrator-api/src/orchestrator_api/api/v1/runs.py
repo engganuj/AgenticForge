@@ -42,7 +42,13 @@ async def create_run(body: RunCreateRequest) -> RunCreateResponse:
         if agent is None:
             raise HTTPException(status_code=404, detail=f"no such agent: {body.agent_name}")
 
-        run = Run(agent_id=agent.id, status="queued", input=body.input, requested_by="api")
+        run = Run(
+            agent_id=agent.id,
+            status="queued",
+            input=body.input,
+            model_override=body.model_override,
+            requested_by="api",
+        )
         session.add(run)
         await session.flush()
         run_id = run.id

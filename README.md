@@ -73,6 +73,7 @@ make demo-m3           # OpenAPI adapter: registers ToolSources, restarts mcp-se
 sudo systemctl start redis-server   # or: redis-server --daemonize yes
 make up-langfuse                    # self-hosted Langfuse (Docker), even though app services stay native
 make demo-m4                        # submits a run, polls to completion, prints the Langfuse trace link
+make demo-m5                        # seeds 2 real model providers + a routing rule, proves override > rule > default
 ```
 
 ## Repository layout
@@ -95,7 +96,7 @@ demo/                          Per-milestone runnable demo scripts (double as sm
 - [x] M2 — MCP server with manual tools + real APIs (API-key auth, audit logging): weather (`make demo-m2`) and DevOps/code-review — PR review + create-branch/commit/open-PR (`make demo-m2-devops`)
 - [x] M3 — OpenAPI-to-MCP adapter: auto-generates a tool per operation from any OpenAPI spec, no hand-written code (`make demo-m3`)
 - [x] M4 — LangGraph agent runtime: `orchestrator-worker` executes a supervisor/tools loop over MCP, queued via arq/Redis, checkpointed in Postgres, traced in Langfuse (`make demo-m4`)
-- [ ] M5 — Model registry + multi-provider routing
+- [x] M5 — Model registry + multi-provider routing: `model_providers`/`model_registry`/`model_routing_rules` resolved live (no restart needed), resolution order override > routing rule > agent default (`make demo-m5`)
 - [ ] M6 — File ingestion + pgvector RAG
 - [ ] M7 — Semantic layer (Cube.dev)
 - [ ] M8 — RBAC/audit/PII governance hardening
